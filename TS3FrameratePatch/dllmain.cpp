@@ -37,7 +37,10 @@ void WriteToMemory(DWORD addressToWrite, int* valueToWrite, int byteNum)
     VirtualProtect((LPVOID)(addressToWrite), byteNum, OldProtection, NULL);
 }
 
+//uncapped hook. bad!!!
 char hookUncapped[] = { 0xC3 };
+//"let the computer handle it" option.
+char hookSystem[] = { 0xB9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x6A, 0x00 };
 //put tps cap at + 1 byte offset
 char hookCapped[] = { 0xB9, 0x01, 0x00, 0x00, 0x00, 0x90 };
 char lookup[] = { 0x8B, 0x44, 0x24, 0x04, 0x8B, 0x08, 0x6A, 0x01, 0x51, 0xFF };
@@ -91,15 +94,19 @@ inline bool exists(const std::wstring& name) {
     return (_wstat(name.c_str(), &buffer) == 0);
 }
 
+
 DWORD WINAPI MainThread(LPVOID param)
 {
     wchar_t modName[MAX_PATH];
     GetModuleFileName(NULL, modName, MAX_PATH);
-    if (wcsstr(modName, L"TS3") == 0)
+    bool isLauncher = false;
+    if (wcsstr(modName, L"TS3") == 0 && wcsstr(modName, L"Sims3") == 0)
     {
         FreeLibraryAndExitThread((HMODULE)param, 0);
         return 0;
     }
+    if (wcsstr(modName, L"Sims3") != NULL)
+        isLauncher = true;
     std::wstring::size_type pos = std::wstring(modName).find_last_of(L"\\/");
     auto folder = std::wstring(modName).substr(0, pos);
     wchar_t wcs[MAX_PATH];
@@ -153,15 +160,22 @@ DWORD WINAPI MainThread(LPVOID param)
     MODULEINFO modInfo;
     GetModuleInformation(proc, module, &modInfo, sizeof(MODULEINFO));
     int size = modInfo.SizeOfImage;
-    DWORD addr = (DWORD)ScanInternal(lookup, sizeof(lookup) / sizeof(*lookup), modBase, size);
-    if (addr == (DWORD)nullptr)
+    DWORD addr = (DWORD)nullptr;
+    while (addr == (DWORD)nullptr)
     {
-        addr = (DWORD)ScanInternal(lookup2, sizeof(lookup2) / sizeof(*lookup2), modBase, size);
+        addr = (DWORD)ScanInternal(lookup, sizeof(lookup) / sizeof(*lookup), modBase, size);
         if (addr == (DWORD)nullptr)
         {
-            MessageBox(NULL, L"Smoothness Patch Failed.", L"Error", MB_OK);
-            FreeLibraryAndExitThread((HMODULE)param, 0);
-            return 0;
+            addr = (DWORD)ScanInternal(lookup2, sizeof(lookup2) / sizeof(*lookup2), modBase, size);
+            if (addr == (DWORD)nullptr)
+            {
+                Sleep(500);
+                /*
+                if (!isLauncher)
+                    MessageBox(NULL, L"Smoothness Patch Failed.", L"Error", MB_OK);
+                FreeLibraryAndExitThread((HMODULE)param, 0);
+                return 0;*/
+            }
         }
     }
     
@@ -174,14 +188,23 @@ DWORD WINAPI MainThread(LPVOID param)
     int tickrate = 0;
     if (tps > 0)
         tickrate = 1000 / tps;
-    if (tickrate == 0)
+    else
+    {
+        if (tps < 0)
+            tickrate = -1;
+    }
+    if (tickrate == -1)
     {
         WriteToMemory(addr, hookUncapped, sizeof(hookUncapped) / sizeof(*hookUncapped));
+    }
+    else if (tickrate == 0)
+    {
+        WriteToMemory(addr, hookSystem, sizeof(hookSystem) / sizeof(*hookSystem));
     }
     else
     {
         WriteToMemory(addr, hookCapped, sizeof(hookCapped) / sizeof(*hookCapped));
-        WriteToMemory(addr+1, &tickrate, 4);
+        WriteToMemory(addr + 1, &tickrate, 4);
     }
     FreeLibraryAndExitThread((HMODULE)param, 0);
     return 0;
