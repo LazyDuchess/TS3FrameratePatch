@@ -5,6 +5,10 @@
 #include <fstream>
 #include <vector>
 #include <sstream>
+#include <d3d9.h> 
+#include "D3Dhook.h"
+#include <math.h>
+#pragma comment(lib, "D3D Hook x86.lib")
 
 //thanks stackoverflow
 void WriteToMemory(DWORD addressToWrite, char* valueToWrite, int byteNum)
@@ -94,10 +98,58 @@ inline bool exists(const std::wstring& name) {
     return (_wstat(name.c_str(), &buffer) == 0);
 }
 
+//Frame Limiter Stuff-----------------------
+
+typedef long(__stdcall* tPresent)(LPDIRECT3DDEVICE9, RECT*,
+    RECT*,
+    HWND,
+    RGNDATA*);
+tPresent oD3D9Present = NULL;
+int FPSTargetMS = 0;
+int currentFrameTime;
+int lastFrameTime;
+int timeBetweenFrames;
+
+long __stdcall hkD3D9Present(LPDIRECT3DDEVICE9 pDevice, RECT* pSourceRect,
+    RECT* pDestRect,
+    HWND          hDestWindowOverride,
+    RGNDATA* pDirtyRegion)
+{
+    long present = oD3D9Present(pDevice, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    currentFrameTime = GetTickCount();
+    timeBetweenFrames = currentFrameTime - lastFrameTime;
+    if (timeBetweenFrames < FPSTargetMS)
+    {
+        timeBetweenFrames = currentFrameTime + (FPSTargetMS - timeBetweenFrames);
+        while (GetTickCount() < timeBetweenFrames) {};
+    }
+    lastFrameTime = GetTickCount();
+    return present;
+}
+
+//------------------------------------------
+
+HWND g_HWND = NULL;
+wchar_t modName[MAX_PATH];
+BOOL CALLBACK EnumWindowsProcMy(HWND hwnd, LPARAM lParam)
+{
+    DWORD lpdwProcessId;
+    GetWindowThreadProcessId(hwnd, &lpdwProcessId);
+    if (IsWindowVisible(hwnd) && lpdwProcessId == lParam)
+    {
+        g_HWND = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+bool bExit = false;
 
 DWORD WINAPI MainThread(LPVOID param)
 {
-    wchar_t modName[MAX_PATH];
+    /*
+    AllocConsole();
+    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);*/
     GetModuleFileName(NULL, modName, MAX_PATH);
     bool isLauncher = false;
     if (wcsstr(modName, L"TS3") == 0 && wcsstr(modName, L"Sims3") == 0)
@@ -115,6 +167,7 @@ DWORD WINAPI MainThread(LPVOID param)
     int tps = 0;
     bool debug = false;
     int delay = 0;
+    bool borderless = false;
     if (exists(wcs))
     {
         std::wifstream file(wcs);
@@ -147,6 +200,18 @@ DWORD WINAPI MainThread(LPVOID param)
                     {
                         delay = intValue;
                     }
+                    if (!wcscmp(split[0].c_str(), L"FPSLimit"))
+                    {
+                        if (intValue > 0)
+                        {
+                            FPSTargetMS = 800 / intValue;
+                        }
+                    }
+                    if (!wcscmp(split[0].c_str(), L"Borderless"))
+                    {
+                        if (intValue == 1)
+                            borderless = true;
+                    }
                 }
             }
         }
@@ -170,15 +235,34 @@ DWORD WINAPI MainThread(LPVOID param)
             if (addr == (DWORD)nullptr)
             {
                 Sleep(500);
-                /*
-                if (!isLauncher)
-                    MessageBox(NULL, L"Smoothness Patch Failed.", L"Error", MB_OK);
-                FreeLibraryAndExitThread((HMODULE)param, 0);
-                return 0;*/
             }
         }
     }
-    
+    if (FPSTargetMS > 0)
+    {
+        if (init_D3D())	// D3D methods table
+        {
+            methodesHook(17, hkD3D9Present, (LPVOID*)&oD3D9Present); // hook endscene
+            lastFrameTime = GetTickCount();
+        }
+    }
+    if (borderless)
+    {
+        int pid = GetCurrentProcessId();
+        while (g_HWND == NULL)
+        {
+            EnumWindows(EnumWindowsProcMy, pid);
+        }
+        LONG lStyle = GetWindowLong(g_HWND, GWL_STYLE);
+        LONG SavelStyle = lStyle;
+        lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
+        SetWindowLong(g_HWND, GWL_STYLE, lStyle);
+        LONG lExStyle = GetWindowLong(g_HWND, GWL_EXSTYLE);
+        LONG SavelExStyle = lExStyle;
+        lExStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+        SetWindowLong(g_HWND, GWL_EXSTYLE, lExStyle);
+        SetWindowPos(g_HWND, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
     if (debug)
     {
         std::wstring w = std::to_wstring(addr);
@@ -191,7 +275,12 @@ DWORD WINAPI MainThread(LPVOID param)
     else
     {
         if (tps < 0)
-            tickrate = -1;
+        {
+            if (tps == -2)
+                tickrate = -2;
+            else
+                tickrate = -1;
+        }
     }
     if (tickrate == -1)
     {
@@ -201,10 +290,19 @@ DWORD WINAPI MainThread(LPVOID param)
     {
         WriteToMemory(addr, hookSystem, sizeof(hookSystem) / sizeof(*hookSystem));
     }
-    else
+    else if (tickrate != -2)
     {
         WriteToMemory(addr, hookCapped, sizeof(hookCapped) / sizeof(*hookCapped));
         WriteToMemory(addr + 1, &tickrate, 4);
+    }
+    if (FPSTargetMS > 0)
+    {
+        while (!bExit)
+        {
+            Sleep(100); // Sleeps until shutdown
+        }
+
+        methodesUnhook(); // disables and removes all hooks
     }
     FreeLibraryAndExitThread((HMODULE)param, 0);
     return 0;
