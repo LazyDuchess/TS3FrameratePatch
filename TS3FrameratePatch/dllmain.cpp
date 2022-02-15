@@ -8,6 +8,10 @@
 #include <d3d9.h> 
 #include "D3Dhook.h"
 #include <math.h>
+#include <chrono>
+#include <iostream>
+#include <algorithm>
+//#include <thread>
 #pragma comment(lib, "D3D Hook x86.lib")
 
 //thanks stackoverflow
@@ -105,10 +109,31 @@ typedef long(__stdcall* tPresent)(LPDIRECT3DDEVICE9, RECT*,
     HWND,
     RGNDATA*);
 tPresent oD3D9Present = NULL;
-int FPSTargetMS = 0;
-int currentFrameTime;
-int lastFrameTime;
-int timeBetweenFrames;
+long long FPSTarget = 0;
+std::chrono::steady_clock::time_point currentFrameTime;
+std::chrono::steady_clock::time_point lastFrameTime;
+long long timeBetweenFrames;
+
+BOOLEAN nanosleep(LONGLONG ns) {
+    /* Declarations */
+    HANDLE timer;   /* Timer handle */
+    LARGE_INTEGER li;   /* Time defintion */
+    /* Create timer */
+    if (!(timer = CreateWaitableTimer(NULL, TRUE, NULL)))
+        return FALSE;
+    /* Set timer properties */
+    li.QuadPart = -ns;
+    if (!SetWaitableTimer(timer, &li, 0, NULL, NULL, FALSE)) {
+        CloseHandle(timer);
+        return FALSE;
+    }
+    /* Start & wait for timer */
+    WaitForSingleObject(timer, INFINITE);
+    /* Clean resources */
+    CloseHandle(timer);
+    /* Slept without problems */
+    return TRUE;
+}
 
 long __stdcall hkD3D9Present(LPDIRECT3DDEVICE9 pDevice, RECT* pSourceRect,
     RECT* pDestRect,
@@ -116,14 +141,28 @@ long __stdcall hkD3D9Present(LPDIRECT3DDEVICE9 pDevice, RECT* pSourceRect,
     RGNDATA* pDirtyRegion)
 {
     long present = oD3D9Present(pDevice, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-    currentFrameTime = GetTickCount();
-    timeBetweenFrames = currentFrameTime - lastFrameTime;
-    if (timeBetweenFrames < FPSTargetMS)
+    if (FPSTarget != 0)
     {
-        timeBetweenFrames = currentFrameTime + (FPSTargetMS - timeBetweenFrames);
-        while (GetTickCount() < timeBetweenFrames) {};
+        currentFrameTime = std::chrono::steady_clock::now();
+        timeBetweenFrames = std::chrono::duration_cast<std::chrono::nanoseconds>(currentFrameTime - lastFrameTime).count();
+        //timeBetweenFrames = currentFrameTime - lastFrameTime;
+        if (timeBetweenFrames < FPSTarget)
+        {
+            auto cPoint = currentFrameTime.time_since_epoch().count();
+            //auto cPointNano = std::chrono::duration_cast<std::chrono::nanoseconds>(cPoint - currentFrameTime).count();
+            auto targetNow = cPoint + (FPSTarget - timeBetweenFrames) - 1; //Compensate a litle?
+            //nanosleep(targetNow);
+            //std::this_thread::sleep_for(std::chrono::nanoseconds(targetNow));
+            while (cPoint/*Nano*/ < targetNow)
+            {
+                cPoint = std::chrono::steady_clock::now().time_since_epoch().count();
+                //cPointNano = std::chrono::duration_cast<std::chrono::nanoseconds>(cPoint - currentFrameTime).count();
+            }
+            //timeBetweenFrames = currentFrameTime + (FPSTarget - timeBetweenFrames);
+            //while (std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()) < timeBetweenFrames) {};
+        }
+        lastFrameTime = std::chrono::steady_clock::now();
     }
-    lastFrameTime = GetTickCount();
     return present;
 }
 
@@ -145,11 +184,50 @@ BOOL CALLBACK EnumWindowsProcMy(HWND hwnd, LPARAM lParam)
 
 bool bExit = false;
 
+void MakeBorderless() {
+    int pid = GetCurrentProcessId();
+    while (g_HWND == NULL)
+    {
+        EnumWindows(EnumWindowsProcMy, pid);
+    }
+    LONG lStyle = GetWindowLong(g_HWND, GWL_STYLE);
+    LONG SavelStyle = lStyle;
+    lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
+    SetWindowLong(g_HWND, GWL_STYLE, lStyle);
+    LONG lExStyle = GetWindowLong(g_HWND, GWL_EXSTYLE);
+    LONG SavelExStyle = lExStyle;
+    lExStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+    SetWindowLong(g_HWND, GWL_EXSTYLE, lExStyle);
+    SetWindowPos(g_HWND, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+}
+
+DWORD WINAPI BorderlessThread(LPVOID param)
+{
+    while (true)
+    {
+        MakeBorderless();
+        Sleep(500);
+    }
+    return 0;
+}
+
+void RunBorderlessThread(LPVOID param) {
+    CreateThread(0, 0, BorderlessThread, param, 0, 0);
+}
+
 DWORD WINAPI MainThread(LPVOID param)
 {
     /*
     AllocConsole();
-    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);*/
+    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
+    */
+    std::wstring cmdLine = GetCommandLine();
+    std::transform(
+        cmdLine.begin(), cmdLine.end(),
+        cmdLine.begin(),
+        towlower);
+    //wprintf(cmdLine.c_str());
+ 
     GetModuleFileName(NULL, modName, MAX_PATH);
     bool isLauncher = false;
     if (wcsstr(modName, L"TS3") == 0 && wcsstr(modName, L"Sims3") == 0)
@@ -204,7 +282,7 @@ DWORD WINAPI MainThread(LPVOID param)
                     {
                         if (intValue > 0)
                         {
-                            FPSTargetMS = 800 / intValue;
+                            FPSTarget = 1e+9 / intValue;
                         }
                     }
                     if (!wcscmp(split[0].c_str(), L"Borderless"))
@@ -219,6 +297,13 @@ DWORD WINAPI MainThread(LPVOID param)
     }
     if (delay > 0)
         Sleep(delay);
+    //Package installer runs at like 1500 FPS on my rig. Override settings.
+    if (wcsstr(cmdLine.c_str(), L"-ccuninstall:") != 0 || wcsstr(cmdLine.c_str(), L"-ccinstall:") != 0)
+    {
+        borderless = false;
+        FPSTarget = 1e+9 / 60;
+        debug = false;
+    }
     HMODULE module = GetModuleHandleA(NULL);
     modBase = (char*)GetModuleHandleA(NULL);
     HANDLE proc = GetCurrentProcess();
@@ -238,30 +323,17 @@ DWORD WINAPI MainThread(LPVOID param)
             }
         }
     }
-    if (FPSTargetMS > 0)
+    if (FPSTarget > 0)
     {
         if (init_D3D())	// D3D methods table
         {
             methodesHook(17, hkD3D9Present, (LPVOID*)&oD3D9Present); // hook endscene
-            lastFrameTime = GetTickCount();
+            lastFrameTime = std::chrono::steady_clock::now();
         }
     }
     if (borderless)
     {
-        int pid = GetCurrentProcessId();
-        while (g_HWND == NULL)
-        {
-            EnumWindows(EnumWindowsProcMy, pid);
-        }
-        LONG lStyle = GetWindowLong(g_HWND, GWL_STYLE);
-        LONG SavelStyle = lStyle;
-        lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
-        SetWindowLong(g_HWND, GWL_STYLE, lStyle);
-        LONG lExStyle = GetWindowLong(g_HWND, GWL_EXSTYLE);
-        LONG SavelExStyle = lExStyle;
-        lExStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
-        SetWindowLong(g_HWND, GWL_EXSTYLE, lExStyle);
-        SetWindowPos(g_HWND, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        RunBorderlessThread(param);
     }
     if (debug)
     {
@@ -295,7 +367,7 @@ DWORD WINAPI MainThread(LPVOID param)
         WriteToMemory(addr, hookCapped, sizeof(hookCapped) / sizeof(*hookCapped));
         WriteToMemory(addr + 1, &tickrate, 4);
     }
-    if (FPSTargetMS > 0)
+    if (FPSTarget > 0)
     {
         while (!bExit)
         {
