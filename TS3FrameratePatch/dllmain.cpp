@@ -114,27 +114,6 @@ std::chrono::steady_clock::time_point currentFrameTime;
 std::chrono::steady_clock::time_point lastFrameTime;
 long long timeBetweenFrames;
 
-BOOLEAN nanosleep(LONGLONG ns) {
-    /* Declarations */
-    HANDLE timer;   /* Timer handle */
-    LARGE_INTEGER li;   /* Time defintion */
-    /* Create timer */
-    if (!(timer = CreateWaitableTimer(NULL, TRUE, NULL)))
-        return FALSE;
-    /* Set timer properties */
-    li.QuadPart = -ns;
-    if (!SetWaitableTimer(timer, &li, 0, NULL, NULL, FALSE)) {
-        CloseHandle(timer);
-        return FALSE;
-    }
-    /* Start & wait for timer */
-    WaitForSingleObject(timer, INFINITE);
-    /* Clean resources */
-    CloseHandle(timer);
-    /* Slept without problems */
-    return TRUE;
-}
-
 long __stdcall hkD3D9Present(LPDIRECT3DDEVICE9 pDevice, RECT* pSourceRect,
     RECT* pDestRect,
     HWND          hDestWindowOverride,
@@ -150,7 +129,7 @@ long __stdcall hkD3D9Present(LPDIRECT3DDEVICE9 pDevice, RECT* pSourceRect,
         {
             auto cPoint = currentFrameTime.time_since_epoch().count();
             //auto cPointNano = std::chrono::duration_cast<std::chrono::nanoseconds>(cPoint - currentFrameTime).count();
-            auto targetNow = cPoint + (FPSTarget - timeBetweenFrames) - 1; //Compensate a litle?
+            auto targetNow = cPoint + (FPSTarget - timeBetweenFrames);
             //nanosleep(targetNow);
             //std::this_thread::sleep_for(std::chrono::nanoseconds(targetNow));
             while (cPoint/*Nano*/ < targetNow)
@@ -282,7 +261,7 @@ DWORD WINAPI MainThread(LPVOID param)
                     {
                         if (intValue > 0)
                         {
-                            FPSTarget = 1e+9 / intValue;
+                            FPSTarget = 1e+9 / intValue; //Compensate...?
                         }
                     }
                     if (!wcscmp(split[0].c_str(), L"Borderless"))
@@ -367,7 +346,7 @@ DWORD WINAPI MainThread(LPVOID param)
         WriteToMemory(addr, hookCapped, sizeof(hookCapped) / sizeof(*hookCapped));
         WriteToMemory(addr + 1, &tickrate, 4);
     }
-    if (FPSTarget > 0)
+    if (FPSTarget > 0 || borderless)
     {
         while (!bExit)
         {
